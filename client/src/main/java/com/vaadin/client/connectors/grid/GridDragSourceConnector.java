@@ -26,11 +26,11 @@ import java.util.stream.Collectors;
 import com.google.gwt.animation.client.AnimationScheduler;
 import com.google.gwt.dom.client.Element;
 import com.google.gwt.dom.client.NativeEvent;
+import com.google.gwt.dom.client.Style;
 import com.google.gwt.dom.client.Style.Float;
 import com.google.gwt.dom.client.Style.Unit;
 import com.google.gwt.dom.client.TableRowElement;
 import com.google.gwt.user.client.DOM;
-import com.google.gwt.user.client.Window;
 import com.google.gwt.user.client.ui.Image;
 import com.vaadin.client.BrowserInfo;
 import com.vaadin.client.ServerConnector;
@@ -177,10 +177,8 @@ public class GridDragSourceConnector extends DragSourceExtensionConnector {
                     badge.getStyle().setFloat(Float.RIGHT);
                     badge.getStyle().setMarginRight(20, Unit.PX);
                 } else {
-                    badge.getStyle().setMarginLeft(
-                            getRelativeX(draggedRowElement, dragStartEvent)
-                                    + 10,
-                            Unit.PX);
+                    badge.getStyle().setMarginLeft(WidgetUtil.getRelativeX(
+                            draggedRowElement, dragStartEvent) + 10, Unit.PX);
                 }
                 badge.getStyle().setMarginTop(-20, Unit.PX);
 
@@ -188,18 +186,42 @@ public class GridDragSourceConnector extends DragSourceExtensionConnector {
 
                 // Remove badge on the next animation frame. Drag image will
                 // still contain the badge.
+                // This hack is used instead of setDragImage since IE11 and Edge
+                // don't support that
                 AnimationScheduler.get().requestAnimationFrame(timestamp -> {
                     badge.removeFromParent();
                 }, (Element) dragStartEvent.getEventTarget().cast());
             }
-            fixDragImageForDesktopSafari(draggedRowElement);
+            fixDragImageTransformForDesktopSafari(dragStartEvent,
+                    draggedRowElement);
             fixDragImageTransformForMobile(draggedRowElement);
         }
     }
 
-    private int getRelativeX(Element element, NativeEvent event) {
-        int relativeLeft = element.getAbsoluteLeft() - Window.getScrollLeft();
-        return WidgetUtil.getTouchOrMouseClientX(event) - relativeLeft;
+    /*
+     * #9261 Desktop Safari won't show the drag image for other than the first
+     * row because of transform: translate3d() used to position grid rows.
+     */
+    private void fixDragImageTransformForDesktopSafari(
+            NativeEvent dragStartEvent, Element draggedRowElement) {
+        BrowserInfo browserInfo = BrowserInfo.get();
+        if (!browserInfo.isTouchDevice() && browserInfo.isSafari()) {
+            Element clone = (Element) draggedRowElement.cloneNode(true);
+            Style style = clone.getStyle();
+            style.clearProperty("transform");
+            // need to use z-index -1 or otherwise the cloned node will flash on
+            // the beginning of the grid, and the first row will not get a drag
+            // image at all ...
+            style.setZIndex(-1);
+            draggedRowElement.getParentElement().appendChild(clone);
+
+            dragStartEvent.getDataTransfer().setDragImage(clone,
+                    WidgetUtil.getRelativeX(draggedRowElement, dragStartEvent),
+                    WidgetUtil.getRelativeY(draggedRowElement, dragStartEvent));
+            AnimationScheduler.get().requestAnimationFrame(timestamp -> {
+                clone.removeFromParent();
+            }, clone);
+        }
     }
 
     @Override
@@ -216,7 +238,8 @@ public class GridDragSourceConnector extends DragSourceExtensionConnector {
                     if (!dataMap.containsKey(type)) {
                         dataMap.put(type, data);
                     } else {
-                        // Separate data with new line character when multiple rows
+                        // Separate data with new line character when multiple
+                        // rows
                         // are dragged
                         dataMap.put(type, dataMap.get(type) + "\n" + data);
                     }

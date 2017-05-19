@@ -17,6 +17,7 @@ package com.vaadin.client.extensions;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.logging.Logger;
 
 import com.google.gwt.animation.client.AnimationScheduler;
 import com.google.gwt.dom.client.DataTransfer;
@@ -27,7 +28,9 @@ import com.google.gwt.dom.client.Style.Position;
 import com.google.gwt.user.client.ui.Image;
 import com.google.gwt.user.client.ui.Widget;
 import com.vaadin.client.BrowserInfo;
+import com.vaadin.client.ComputedStyle;
 import com.vaadin.client.ServerConnector;
+import com.vaadin.client.WidgetUtil;
 import com.vaadin.client.annotations.OnStateChange;
 import com.vaadin.client.ui.AbstractComponentConnector;
 import com.vaadin.shared.ui.Connect;
@@ -205,9 +208,9 @@ public class DragSourceExtensionConnector extends AbstractExtensionConnector {
                         .setData(type, data));
             } else {
                 // IE11 accepts only data with type "text"
-                nativeEvent.getDataTransfer()
-                        .setData(DragSourceState.DATA_TYPE_TEXT,
-                                dataMap.get(DragSourceState.DATA_TYPE_TEXT));
+                nativeEvent.getDataTransfer().setData(
+                        DragSourceState.DATA_TYPE_TEXT,
+                        dataMap.get(DragSourceState.DATA_TYPE_TEXT));
             }
 
             // Set style to indicate the element being dragged
@@ -230,47 +233,108 @@ public class DragSourceExtensionConnector extends AbstractExtensionConnector {
     }
 
     /**
-     * Fixes missing drag image for desktop Safari by making the dragged element
-     * position to relative if needed. Safari won't show drag image unless the
-     * dragged element position is relative or absolute / fixed, but not with
-     * display block for the latter.
+     * Fixes missing drag image for desktop Safari on elements that don't have
+     * position: relative. It uses a cloned drag image element which has
+     * position relative. Safari won't show drag image unless the dragged
+     * element position is relative, or in some cases when its absolute/fixed
+     * too.
      * <p>
      * This method is a NOOP for non-safari browser, or mobile safari which is
      * using the DnD Polyfill.
      * <p>
      * This fix is not needed if a custom drag image is used on Safari.
      *
+     * @param dragStartEvent
+     *            the drag start event
      * @param draggedElement
      *            the element that forms the drag image
      */
-    protected void fixDragImageForDesktopSafari(Element draggedElement) {
+    protected void fixDragImageForDesktopSafari(NativeEvent dragStartEvent,
+            Element draggedElement) {
         if (!BrowserInfo.get().isSafari()
                 || BrowserInfo.get().isTouchDevice()) {
             return;
         }
-        final Style style = draggedElement.getStyle();
-        final String position = style.getPosition();
+        ComputedStyle computedStyle = new ComputedStyle(draggedElement);
+        String position = computedStyle.getProperty("position");
+        Logger.getLogger("FOOBAR").warning("POSITION:" + position);
+        if ("relative".equalsIgnoreCase(position)
+                || "fixed".equalsIgnoreCase(position)
+                || "absolute".equalsIgnoreCase(position)) {
+            return;
+        }
+        // if there is transform applied, another fix needs to be made
+        String transform = draggedElement.getStyle().getProperty("transform");
+        Logger.getLogger("FOOBAR").warning("Style transform: " + transform);
+        if (transform != null && !transform.isEmpty()) {
+            return;
+        }
+        Logger.getLogger("FOOBAR").warning("APPLYING HACK");
 
-        // relative works always
-        if ("relative".equalsIgnoreCase(position)) {
+        Element clone = (Element) draggedElement.cloneNode(true);
+        Style clonedStyle = clone.getStyle();
+        clonedStyle.setZIndex(-1);
+        clonedStyle.setPosition(Position.RELATIVE);
+        // clonedStyle.setTop(0, Unit.PX);
+        // clonedStyle.setLeft(0, Unit.PX);
+
+        draggedElement.getParentElement().appendChild(clone);
+        dragStartEvent.getDataTransfer().setDragImage(clone,
+                WidgetUtil.getRelativeX(draggedElement, dragStartEvent),
+                WidgetUtil.getRelativeY(draggedElement, dragStartEvent));
+
+        AnimationScheduler.get().requestAnimationFrame(timestamp -> {
+            clone.removeFromParent();
+        }, clone);
+    }
+
+    /**
+     * Fixes missing or offset drag image caused by using css transform:
+     * translate (or such) by using a cloned drag image element, for which the
+     * property has been cleared for.
+     * <p>
+     * This bug only occurs on Desktop with Safari (doesn't show image at all)
+     * and Firefox (gets offset), and calling this method is NOOP for any other
+     * browser.
+     * <p>
+     * This fix is not needed if custom drag image has been used.
+     *
+     * @param dragStartEvent
+     *            the drag start event
+     * @param draggedElement
+     *            the element being dragged
+     */
+    protected void fixDragImageTransformForDesktop(NativeEvent dragStartEvent,
+            Element draggedElement) {
+        BrowserInfo browserInfo = BrowserInfo.get();
+        if (browserInfo.isTouchDevice()
+                || !(browserInfo.isSafari() || browserInfo.isFirefox())) {
             return;
         }
 
-        // absolute & fixed don't work when there is offset used
-        if ("absolute".equalsIgnoreCase(position)
-                || "fixed".equalsIgnoreCase(position)) {
-            // FIXME #9261 need to figure out how to get absolute and fixed to
-            // position work when there is offset involved, like in Grid.
-            // The following hack with setting position to relative did not
-            // work, nor did clearing top/right/bottom/left.
+        String transform = draggedElement.getStyle().getProperty("transform");
+        String computedStyleTransform = new ComputedStyle(draggedElement)
+                .getProperty("transform");
+        Logger.getLogger("FOOBAR").warning("Style transform: " + transform
+                + " Computed: " + computedStyleTransform);
+        if (computedStyleTransform == null || computedStyleTransform.isEmpty()
+                || computedStyleTransform.equals("none")) {
+            return;
         }
 
-        // for all other positions, set the position to relative and revert it
-        // in an animation frame
-        draggedElement.getStyle().setPosition(Position.RELATIVE);
+        Element clone = (Element) draggedElement.cloneNode(true);
+        Style style = clone.getStyle();
+        style.setProperty("transform", "none !IMPORTANT");
+        // need to use z-index -1 or otherwise the cloned node will flash
+        style.setZIndex(-1);
+        draggedElement.getParentElement().appendChild(clone);
+
+        dragStartEvent.getDataTransfer().setDragImage(clone,
+                WidgetUtil.getRelativeX(draggedElement, dragStartEvent),
+                WidgetUtil.getRelativeY(draggedElement, dragStartEvent));
         AnimationScheduler.get().requestAnimationFrame(timestamp -> {
-            draggedElement.getStyle().setProperty("position", position);
-        }, draggedElement);
+            clone.removeFromParent();
+        }, clone);
     }
 
     /**
@@ -350,7 +414,8 @@ public class DragSourceExtensionConnector extends AbstractExtensionConnector {
         } else {
             Element draggedElement = (Element) dragStartEvent
                     .getCurrentEventTarget().cast();
-            fixDragImageForDesktopSafari(draggedElement);
+            fixDragImageForDesktopSafari(dragStartEvent, draggedElement);
+            fixDragImageTransformForDesktop(dragStartEvent, draggedElement);
             fixDragImageTransformForMobile(draggedElement);
         }
     }
