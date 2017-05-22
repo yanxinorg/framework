@@ -37,7 +37,7 @@ public class ChangeHierarchyBeforeResponseTest extends SingleBrowserTest {
 
         LabelElement label = $(LabelElement.class).all().get(1);
 
-        Assert.assertEquals("Label should have been considered initial twice",
-                "Initial count: 2", label.getText());
+        Assert.assertEquals("Label should have been considered initial once",
+                "Initial count: 1", label.getText());
     }
 }
